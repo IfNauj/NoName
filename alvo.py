@@ -4,6 +4,7 @@ import os
 import sys
 import ctypes
 import time
+import io
 import threading
 import shutil
 from datetime import datetime
