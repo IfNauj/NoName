@@ -18,3 +18,4 @@ def receber_msg(conn, timeout=None, raw=False):
         return corpo if raw else corpo.decode("utf-8", errors="replace")
     except:
         return None
+    #teste
